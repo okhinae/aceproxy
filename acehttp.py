@@ -207,10 +207,10 @@ class HTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
 
     def get_cid(self):
         try:
-	 acelive_url=''+self.path_unquoted.lower()
+	 acelive_url=''+self.path_unquoted
          if self.reqtype == 'torrent':
-          if acelive_url[:4]=='http' :
-           if acelive_url[-8:]=='.acelive' :
+          if acelive_url[:4].lower()=='http' :
+           if acelive_url[-8:].lower()=='.acelive' :
             logger.debug('Trying to download acelive')
             logger.info(acelive_url)
             req = urllib2.Request(acelive_url, headers={'User-Agent' : "Magic Browser"})
