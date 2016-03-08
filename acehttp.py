@@ -22,6 +22,8 @@ import SocketServer
 from socket import error as SocketException
 from socket import SHUT_RDWR
 import urllib2
+import base64
+import json
 import hashlib
 import aceclient
 import aceconfig
@@ -203,6 +205,35 @@ class HTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
                 return
         self.handleRequest(headers_only)
 
+    def get_cid(self):
+        try:
+	 acelive_url=''+self.path_unquoted.lower()
+         if self.reqtype == 'torrent':
+          if acelive_url[:4]=='http' :
+           if acelive_url[-8:]=='.acelive' :
+            logger.debug('Trying to download acelive')
+            logger.info(acelive_url)
+            req = urllib2.Request(acelive_url, headers={'User-Agent' : "Magic Browser"})
+            acelive_file = urllib2.urlopen(
+                req, timeout=10).read()
+            acelive_file_base64 = base64.b64encode(acelive_file)
+            
+            req = urllib2.Request('http://api.torrentstream.net/upload/raw', acelive_file_base64)
+            
+            req.add_header('Content-Length', '%d' % len(acelive_file_base64))
+            
+            req.add_header('Content-Type', 'application/octet-stream')
+            
+            res = urllib2.urlopen(req, timeout=10).read()
+            CID=''+json.loads(res)['content_id']
+            if CID!='' :
+                logger.debug('CID: '+CID)
+                return CID.encode('UTF-8')
+        except:
+            logger.error("Can't download acelive!")
+        
+        return self.path_unquoted
+
     def handleRequest(self, headers_only):
         # Check if third parameter exists
         # …/pid/blablablablabla/video.mpg
@@ -237,6 +268,7 @@ class HTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             return
 
         self.path_unquoted = urllib2.unquote(self.splittedpath[2])
+        ContentID=self.get_cid()
         # Make list with parameters
         self.params = list()
         for i in xrange(3, 8):
@@ -246,25 +278,20 @@ class HTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
                 self.params.append('0')
 
         # Adding client to clientcounter
-        clients = AceStuff.clientcounter.add(self.path_unquoted, self.clientip)
+        clients = AceStuff.clientcounter.add(ContentID, self.clientip)
         # If we are the one client, but sucessfully got ace from clientcounter,
         # then somebody is waiting in the videodestroydelay state
-        self.ace = AceStuff.clientcounter.getAce(self.path_unquoted)
+        self.ace = AceStuff.clientcounter.getAce(ContentID)
         if not self.ace:
             shouldcreateace = True
         else:
             shouldcreateace = False
 
-        # Use PID as VLC ID if PID requested
-        # Or torrent url MD5 hash if torrent requested
-        if self.reqtype == 'pid':
-            self.vlcid = self.path_unquoted
-        else:
-            self.vlcid = hashlib.md5(self.path_unquoted).hexdigest()
+        self.vlcid = ContentID
 
         # If we don't use VLC and we're not the first client
         if clients != 1 and not AceConfig.vlcuse:
-            AceStuff.clientcounter.delete(self.path_unquoted, self.clientip)
+            AceStuff.clientcounter.delete(ContentID, self.clientip)
             logger.error(
                 "Not the first client, cannot continue in non-VLC mode")
             self.dieWithError(503)  # 503 Service Unavailable
@@ -277,12 +304,12 @@ class HTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
                     AceConfig.acehost, AceConfig.aceport, connect_timeout=AceConfig.aceconntimeout,
                     result_timeout=AceConfig.aceresulttimeout)
                 # Adding AceClient instance to pool
-                AceStuff.clientcounter.addAce(self.path_unquoted, self.ace)
+                AceStuff.clientcounter.addAce(ContentID, self.ace)
                 logger.debug("AceClient created")
             except aceclient.AceException as e:
                 logger.error("AceClient create exception: " + repr(e))
                 AceStuff.clientcounter.delete(
-                    self.path_unquoted, self.clientip)
+                    ContentID, self.clientip)
                 self.dieWithError(502)  # 502 Bad Gateway
                 return
 
@@ -403,13 +430,13 @@ class HTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
             self.dieWithError()
         finally:
             logger.debug("END REQUEST")
-            AceStuff.clientcounter.delete(self.path_unquoted, self.clientip)
-            if not self.errorhappened and not AceStuff.clientcounter.get(self.path_unquoted):
+            AceStuff.clientcounter.delete(ContentID, self.clientip)
+            if not self.errorhappened and not AceStuff.clientcounter.get(ContentID):
                 # If no error happened and we are the only client
                 logger.debug("Sleeping for " + str(
                     AceConfig.videodestroydelay) + " seconds")
                 gevent.sleep(AceConfig.videodestroydelay)
-            if not AceStuff.clientcounter.get(self.path_unquoted):
+            if not AceStuff.clientcounter.get(ContentID):
                 logger.debug("That was the last client, destroying AceClient")
                 if AceConfig.vlcuse:
                     try:
@@ -417,7 +444,7 @@ class HTTPHandler(BaseHTTPServer.BaseHTTPRequestHandler):
                     except:
                         pass
                 self.ace.destroy()
-                AceStuff.clientcounter.deleteAce(self.path_unquoted)
+                AceStuff.clientcounter.deleteAce(ContentID)
 
 
 class HTTPServer(SocketServer.ThreadingMixIn, BaseHTTPServer.HTTPServer):
